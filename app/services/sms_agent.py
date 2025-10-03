@@ -1,14 +1,14 @@
 """
 SMS Agent service client for conversation history retrieval.
 """
-import httpx
 from typing import Dict, Any, List
 import re
 import structlog
 from datetime import datetime
 from app.config import settings
-from app.core.circuit_breaker import CircuitBreaker
-from app.core.exceptions import ServiceUnavailableError
+from app.core.circuit_breaker import ServiceClient, CircuitBreakerConfig
+from app.core.retry import get_external_service_retry_config, create_async_retry_decorator
+from app.core.exceptions import ServiceUnavailableError, ExternalServiceError
 
 logger = structlog.get_logger(__name__)
 
@@ -17,12 +17,29 @@ class SMSAgentClient:
     """Client for SMS Agent service integration."""
 
     def __init__(self):
-        self.base_url = settings.sms_agent_url
-        self.timeout = settings.sms_agent_timeout
-        self.circuit_breaker = CircuitBreaker(
-            failure_threshold=settings.sms_agent_failure_threshold,
-            timeout=settings.circuit_breaker_timeout,
-            service_name="SMS Agent",
+        self.service_name = "SMS Agent"
+
+        # Create circuit breaker configuration
+        circuit_config = CircuitBreakerConfig(
+            failure_threshold=getattr(settings, 'sms_agent_failure_threshold', 5),
+            timeout=getattr(settings, 'circuit_breaker_timeout', 60),
+            success_threshold=3,
+            half_open_max_calls=5,
+        )
+
+        # Create service client with circuit breaker
+        self.service_client = ServiceClient(
+            service_name=self.service_name,
+            base_url=settings.sms_agent_url,
+            timeout_seconds=getattr(settings, 'sms_agent_timeout', 30),
+            circuit_breaker_config=circuit_config,
+        )
+
+        # Create retry decorator
+        retry_config = get_external_service_retry_config()
+        self.retry_decorator = create_async_retry_decorator(
+            config=retry_config,
+            service_name=self.service_name,
         )
 
     def _validate_phone_number(self, phone_number: str) -> None:
@@ -296,5 +313,13 @@ class SMSAgentClient:
             return False
 
     def get_circuit_breaker_status(self) -> Dict[str, Any]:
-        """Get the current status of the circuit breaker."""
-        return self.circuit_breaker.get_status()
+        """
+        Get current circuit breaker status.
+        Returns:
+            Circuit breaker status information
+        """
+        return self.service_client.get_circuit_status()
+
+    async def close(self):
+        """Close the service client."""
+        await self.service_client.close()

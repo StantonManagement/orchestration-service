@@ -3,7 +3,7 @@
 import os
 from typing import Any, Dict, List, Optional, Union
 
-from pydantic import AnyHttpUrl, Field, validator
+from pydantic import AnyHttpUrl, Field, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     sms_agent_url: AnyHttpUrl = Field(..., env="SMS_AGENT_URL")
     collections_monitor_url: AnyHttpUrl = Field(..., env="COLLECTIONS_MONITOR_URL")
     notification_service_url: AnyHttpUrl = Field(..., env="NOTIFICATION_SERVICE_URL")
+
+    # Service URL Aliases for dependency injection
+    sms_agent_service_url: str = Field(..., env="SMS_AGENT_URL")
+    collections_monitor_service_url: str = Field(..., env="COLLECTIONS_MONITOR_URL")
+    notification_service_url: str = Field(..., env="NOTIFICATION_SERVICE_URL")
 
     # OpenAI Configuration
     openai_api_key: str = Field(..., env="OPENAI_API_KEY")
@@ -71,7 +76,8 @@ class Settings(BaseSettings):
         env="CORS_ORIGINS"
     )
 
-    @validator("cors_origins", pre=True)
+    @field_validator("cors_origins", mode="before")
+    @classmethod
     def assemble_cors_origins(cls, v: Union[str, List[str]]) -> Union[List[str], str]:
         if isinstance(v, str) and not v.startswith("["):
             return [i.strip() for i in v.split(",")]
@@ -79,21 +85,24 @@ class Settings(BaseSettings):
             return v
         raise ValueError(v)
 
-    @validator("auto_approval_confidence", "manual_approval_min_confidence")
+    @field_validator("auto_approval_confidence", "manual_approval_min_confidence")
+    @classmethod
     def validate_confidence_thresholds(cls, v: float) -> float:
         if not 0.0 <= v <= 1.0:
             raise ValueError("Confidence thresholds must be between 0.0 and 1.0")
         return v
 
-    @validator("openai_temperature")
+    @field_validator("openai_temperature")
+    @classmethod
     def validate_temperature(cls, v: float) -> float:
         if not 0.0 <= v <= 2.0:
             raise ValueError("OpenAI temperature must be between 0.0 and 2.0")
         return v
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
+    model_config = {
+        "env_file": ".env",
+        "case_sensitive": False
+    }
 
 
 # Create global settings instance

@@ -5,7 +5,10 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 from uuid import UUID
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
+from typing import Generic, TypeVar
+
+T = TypeVar('T')
 
 
 class MessageType(str, Enum):
@@ -52,6 +55,67 @@ class PaymentPlanStatus(str, Enum):
     ACTIVE = "active"
 
 
+# Response Wrapper Models
+class ApiResponse(BaseModel, Generic[T]):
+    """Standard API response wrapper."""
+    success: bool = Field(..., description="Request success status")
+    data: Optional[T] = Field(None, description="Response data")
+    message: str = Field(..., description="Response message")
+    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Response timestamp")
+
+
+class SMSResponse(BaseModel):
+    """SMS processing response."""
+    status: str = Field(..., description="Processing status")
+    conversation_id: UUID = Field(..., description="Conversation identifier")
+    workflow_id: Optional[str] = Field(None, description="Workflow identifier")
+    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Response timestamp")
+
+
+# Escalation Request/Response Models (Story 2.2)
+class EscalationRequest(BaseModel):
+    """Manual escalation request data (Story 2.2)."""
+    workflow_id: str = Field(..., description="Workflow identifier")
+    customer_phone: str = Field(..., description="Customer phone number")
+    reason: str = Field(..., description="Reason for escalation")
+    notes: Optional[str] = Field(None, description="Additional notes about the escalation")
+
+
+class EscalationResponse(BaseModel):
+    """Escalation processing response (Story 2.2)."""
+    escalation_id: str = Field(..., description="Unique escalation identifier")
+    workflow_id: str = Field(..., description="Associated workflow ID")
+    status: str = Field(..., description="Escalation status")
+    message: str = Field(..., description="Status message")
+    timestamp: datetime = Field(..., description="Response timestamp")
+
+
+class EscalationStatusResponse(BaseModel):
+    """Escalation status response (Story 2.2)."""
+    workflow_id: str = Field(..., description="Workflow identifier")
+    customer_phone: str = Field(..., description="Customer phone number")
+    last_ai_response: datetime = Field(..., description="Last AI response timestamp")
+    timeout_hours: int = Field(..., description="Timeout threshold in hours")
+    hours_remaining: int = Field(..., description="Hours remaining before timeout")
+    status: str = Field(..., description="Current timeout status")
+    escalation_triggered: bool = Field(..., description="Whether escalation has been triggered")
+    warning_sent: bool = Field(..., description="Whether warning has been sent")
+    created_at: datetime = Field(..., description="Creation timestamp")
+    updated_at: datetime = Field(..., description="Last update timestamp")
+
+
+class EscalationStatisticsResponse(BaseModel):
+    """Escalation statistics response (Story 2.2)."""
+    total_active_workflows: int = Field(..., description="Total active workflows")
+    expired_workflows: int = Field(..., description="Workflows past timeout")
+    warning_workflows: int = Field(..., description="Workflows approaching timeout")
+    escalated_workflows: int = Field(..., description="Workflows with escalations")
+    escalated_today: int = Field(..., description="Escalations triggered today")
+    timeout_threshold_hours: int = Field(..., description="Default timeout threshold")
+    monitoring_active: bool = Field(..., description="Whether monitoring is active")
+    timestamp: datetime = Field(..., description="Statistics timestamp")
+
+
 # Request Models
 class IncomingSMS(BaseModel):
     """Incoming SMS data from SMS Agent."""
@@ -62,7 +126,8 @@ class IncomingSMS(BaseModel):
     timestamp: Optional[datetime] = Field(None, description="Message timestamp")
     direction: MessageType = Field(MessageType.INBOUND, description="Message direction")
 
-    @validator("phone_number")
+    @field_validator("phone_number")
+    @classmethod
     def validate_phone_number(cls, v: str) -> str:
         """Validate phone number format."""
         if not v.startswith("+"):
@@ -80,12 +145,13 @@ class ResponseApproval(BaseModel):
     manager_id: str = Field(..., description="Manager identifier")
     notes: Optional[str] = Field(None, description="Additional notes")
 
-    @validator("approved_text")
-    def validate_approval_text(cls, v: Optional[str], values: Dict[str, Any]) -> Optional[str]:
+    @field_validator("approved_text")
+    @classmethod
+    def validate_approval_text(cls, v: Optional[str], info) -> Optional[str]:
         """Validate approval text based on action."""
-        if values.get("action") == ApprovalAction.APPROVE and not v:
+        if info.data.get("action") == ApprovalAction.APPROVE and not v:
             raise ValueError("approved_text is required when action is 'approve'")
-        if values.get("action") == ApprovalAction.MODIFY and not values.get("modified_text"):
+        if info.data.get("action") == ApprovalAction.MODIFY and not info.data.get("modified_text"):
             raise ValueError("modified_text is required when action is 'modify'")
         return v
 
@@ -149,6 +215,8 @@ class WorkflowStatusResponse(BaseModel):
 
 class AIResponse(BaseModel):
     """AI-generated response data."""
+    model_config = {'protected_namespaces': ()}
+
     content: str = Field(..., description="Generated response content")
     confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence score")
     language: str = Field(default="english", description="Response language")

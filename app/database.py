@@ -4,11 +4,22 @@ Database connection and operations for the System Orchestrator Service.
 from typing import Dict, Any, List, Optional
 from uuid import UUID
 from datetime import datetime, timedelta
+from functools import lru_cache
 
 from app.models.ai_response import AIResponseQueue, ApprovalAuditLog
 import structlog
 
 logger = structlog.get_logger(__name__)
+
+
+class DatabaseError(Exception):
+    """Exception raised for database-related errors."""
+    pass
+
+
+class DatabaseModel:
+    """Base class for database models."""
+    pass
 
 
 class DatabaseService:
@@ -382,6 +393,18 @@ def get_supabase_client():
             self.data = data
 
     return MockSupabaseClient()
+
+
+# Database session dependency for FastAPI
+@lru_cache()
+def get_db():
+    """
+    Get database session for dependency injection.
+
+    Returns:
+        DatabaseService instance
+    """
+    return database_service
 
 
 # Global database service instance

@@ -51,3 +51,8 @@ def setup_logging() -> None:
 def get_logger(name: str) -> structlog.stdlib.BoundLogger:
     """Get a structured logger instance."""
     return structlog.get_logger(name)
+
+
+def get_request_logger():
+    """Get a request logger instance."""
+    return structlog.get_logger("request")

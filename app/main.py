@@ -4,6 +4,7 @@ import asyncio
 import uuid
 from datetime import datetime
 from typing import Dict, Any, List
+from decimal import Decimal
 
 from fastapi import FastAPI, HTTPException, status, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,10 +16,13 @@ from app.services.external import ServiceClients
 from app.services.openai_service import OpenAIService
 from app.services.database import db_service
 from app.models.schemas import (
-    IncomingSMS, ResponseApproval, PaymentPlanDetection, EscalationRequest, RetryRequest,
+    IncomingSMS, ResponseApproval, EscalationRequest, RetryRequest,
     HealthResponse, DependencyHealthResponse, WorkflowStatusResponse, MetricsResponse,
     WorkflowStatus, ApprovalAction, AIResponse
 )
+from app.api.payment_plan import router as payment_plan_router
+from app.api.escalation import router as escalation_router
+from app.core.dependencies import get_escalation_service
 
 # Initialize logging
 setup_logging()
@@ -32,8 +36,8 @@ app = FastAPI(
     title="System Orchestrator Service",
     description="Coordinates collections system components for AI-powered tenant communications",
     version=settings.service_version,
-    docs_url="/docs" if settings.debug else None,
-    redoc_url="/redoc" if settings.debug else None,
+    docs_url="/docs",
+    redoc_url="/redoc",
 )
 
 # Initialize services
@@ -50,6 +54,10 @@ if settings.enable_cors:
         allow_headers=["*"],
     )
 
+# Include API routers
+app.include_router(payment_plan_router)
+app.include_router(escalation_router)
+
 
 @app.on_event("startup")
 async def startup_event():
@@ -61,6 +69,15 @@ async def startup_event():
     if not db_healthy:
         logger.warning("Database health check failed on startup")
 
+    # Start escalation monitoring services (Story 2.2)
+    try:
+        escalation_service = get_escalation_service()
+        await escalation_service.start_services()
+        logger.info("Escalation monitoring services started successfully")
+    except Exception as e:
+        logger.error("Failed to start escalation monitoring services", error=str(e))
+        # Continue startup even if escalation services fail
+
     logger.info("Service startup complete", database_healthy=db_healthy)
 
 
@@ -68,6 +85,14 @@ async def startup_event():
 async def shutdown_event():
     """Cleanup on shutdown."""
     logger.info("Shutting down System Orchestrator Service")
+
+    # Stop escalation monitoring services (Story 2.2)
+    try:
+        escalation_service = get_escalation_service()
+        await escalation_service.stop_services()
+        logger.info("Escalation monitoring services stopped successfully")
+    except Exception as e:
+        logger.error("Failed to stop escalation monitoring services", error=str(e))
 
 
 # Health Endpoints
@@ -184,7 +209,7 @@ async def process_incoming_sms(sms_data: IncomingSMS):
 
         # Process payment plan if detected
         if ai_response.payment_plan_detected:
-            await _process_payment_plan(sms_data, ai_response)
+            await _process_payment_plan(sms_data, ai_response, workflow_id)
 
         # Handle escalation triggers
         if ai_response.escalation_triggers:
@@ -266,18 +291,136 @@ async def _escalate_low_confidence(sms_data: IncomingSMS, ai_response: AIRespons
     logger.info("Low confidence escalation", conversation_id=sms_data.conversation_id)
 
 
-async def _process_payment_plan(sms_data: IncomingSMS, ai_response: AIResponse):
-    """Process detected payment plan."""
-    plan_data = {
-        "conversation_id": sms_data.conversation_id,
-        "tenant_id": sms_data.tenant_id,
-        "message_content": sms_data.content,
-        "ai_response": ai_response.content,
-        **ai_response.payment_plan_detected
-    }
+async def _process_payment_plan(sms_data: IncomingSMS, ai_response: AIResponse, workflow_id: uuid.UUID):
+    """Process detected payment plan by calling payment plan detection API."""
+    try:
+        # Import the payment plan request schema
+        from app.schemas.payment_plan import PaymentPlanDetectedRequest
+        from app.api.payment_plan import payment_extractor, payment_validator
 
-    # This would store payment plan in database if needed
-    logger.info("Payment plan detected", conversation_id=sms_data.conversation_id)
+        # Create payment plan detection request
+        payment_plan_request = PaymentPlanDetectedRequest(
+            conversation_id=sms_data.conversation_id,
+            tenant_id=sms_data.tenant_id,
+            message_content=sms_data.content,
+            ai_response=ai_response.response_text,
+            tenant_context=await _get_tenant_context(sms_data.tenant_id)
+        )
+
+        # Extract payment plan using the utility
+        payment_plan = payment_extractor.extract_payment_plan(
+            sms_data.content,
+            payment_extractor.ExtractionSource.TENANT_MESSAGE
+        )
+
+        # If not found in tenant message, try AI response
+        if not payment_plan and ai_response.payment_plan_data:
+            # Recreate payment plan object from stored data
+            from app.utils.payment_plan_extraction import ExtractedPaymentPlan, ExtractionSource
+            from datetime import datetime
+
+            payment_plan = ExtractedPaymentPlan(
+                weekly_amount=Decimal(str(ai_response.payment_plan_data.get("weekly_amount"))) if ai_response.payment_plan_data.get("weekly_amount") else None,
+                duration_weeks=ai_response.payment_plan_data.get("duration_weeks"),
+                start_date=datetime.fromisoformat(ai_response.payment_plan_data["start_date"]) if ai_response.payment_plan_data.get("start_date") else None,
+                confidence_score=ai_response.payment_plan_data.get("confidence_score", 0.0),
+                extracted_from=ExtractionSource.AI_RESPONSE,
+                original_text=ai_response.response_text,
+                extraction_patterns=ai_response.payment_plan_data.get("extraction_patterns", [])
+            )
+
+        if payment_plan:
+            # Validate payment plan
+            validation_result = payment_validator.validate_payment_plan(
+                payment_plan,
+                payment_plan_request.tenant_context
+            )
+
+            # Store payment plan in database
+            from app.models.payment_plan import PaymentPlanAttempt
+            from app.database import get_supabase_client
+
+            supabase = get_supabase_client()
+            payment_plan_id = await PaymentPlanAttempt.create(
+                supabase,
+                {
+                    "workflow_id": str(workflow_id),
+                    "extracted_from": payment_plan.extracted_from.value,
+                    "weekly_amount": float(payment_plan.weekly_amount) if payment_plan.weekly_amount else None,
+                    "duration_weeks": payment_plan.duration_weeks,
+                    "start_date": payment_plan.start_date.isoformat() if payment_plan.start_date else None,
+                    "confidence_score": payment_plan.confidence_score,
+                    "validation_result": {
+                        "status": validation_result.status.value,
+                        "is_valid": validation_result.is_valid,
+                        "is_auto_approvable": validation_result.is_auto_approvable,
+                        "errors": [
+                            {
+                                "field": error.field,
+                                "message": error.message,
+                                "severity": error.severity,
+                                "rule_code": error.rule_code
+                            } for error in validation_result.errors
+                        ],
+                        "warnings": [
+                            {
+                                "field": warning.field,
+                                "message": warning.message,
+                                "severity": warning.severity,
+                                "rule_code": warning.rule_code
+                            } for warning in validation_result.warnings
+                        ],
+                        "validation_summary": validation_result.validation_summary
+                    },
+                    "status": validation_result.status.value,
+                    "extraction_patterns": payment_plan.extraction_patterns
+                }
+            )
+
+            logger.info(
+                "Payment plan processed successfully",
+                conversation_id=sms_data.conversation_id,
+                payment_plan_id=str(payment_plan_id),
+                validation_status=validation_result.status.value,
+                is_auto_approvable=validation_result.is_auto_approvable
+            )
+
+            # Update workflow status based on validation results
+            if validation_result.is_auto_approvable:
+                await db_service.update_workflow(workflow_id, {
+                    "status": "payment_plan_approved",
+                    "payment_plan_id": str(payment_plan_id)
+                })
+            else:
+                await db_service.update_workflow(workflow_id, {
+                    "status": "payment_plan_needs_review",
+                    "payment_plan_id": str(payment_plan_id)
+                })
+        else:
+            logger.warning(
+                "Payment plan flag set but no plan extracted",
+                conversation_id=sms_data.conversation_id
+            )
+
+    except Exception as e:
+        logger.error(
+            "Failed to process payment plan",
+            conversation_id=sms_data.conversation_id,
+            error=str(e)
+        )
+        # Don't fail the entire SMS processing due to payment plan processing error
+
+
+async def _get_tenant_context(tenant_id: str) -> Dict[str, Any]:
+    """Get tenant context for payment plan validation."""
+    try:
+        tenant_data = await service_clients.collections_monitor.get_tenant(tenant_id)
+        if tenant_data.get("success"):
+            return tenant_data.get("data", {}).get("tenant", {})
+        return {}
+    except Exception as e:
+        logger.error(f"Failed to get tenant context for {tenant_id}: {str(e)}")
+        return {}
 
 
 async def _handle_escalation_triggers(sms_data: IncomingSMS, ai_response: AIResponse, workflow_id: uuid.UUID):
@@ -501,16 +644,6 @@ async def get_metrics():
         )
 
 
-# Additional endpoints for Epic 2 functionality (placeholder implementations)
-@app.post("/orchestrate/payment-plan-detected")
-async def payment_plan_detected(payment_data: PaymentPlanDetection):
-    """Process detected payment plan."""
-    logger.info("Processing payment plan detection", conversation_id=payment_data.conversation_id)
-
-    # Store payment plan and validate against business rules
-    # This would be fully implemented in Epic 2
-
-    return {"status": "payment_plan_processed"}
 
 
 @app.post("/orchestrate/escalate")

@@ -1,0 +1,66 @@
+schema: 1
+story: "2.1"
+story_title: "Payment Plan Detection"
+gate: CONCERNS
+status_reason: "Significant improvements made - tests now passing, but duplicate endpoints and startup errors remain"
+reviewer: "Quinn (Test Architect)"
+updated: "2025-10-03T00:00:00Z"
+
+waiver: { active: false }
+
+top_issues:
+  - id: "API-002"
+    severity: high
+    finding: "Duplicate POST /orchestrate/payment-plan-detected endpoint causes FastAPI conflicts"
+    suggested_action: "Remove duplicate endpoint from main.py (lines 628-637)"
+  - id: "PYD-001"
+    severity: medium
+    finding: "Pydantic namespace conflict with 'model_used' field preventing startup"
+    suggested_action: "Add model_config['protected_namespaces'] = ()" to affected models
+  - id: "PYD-002"
+    severity: low
+    finding: "Legacy Pydantic V1 validators still in use (config.py, schemas.py)"
+    suggested_action: "Update remaining @validator to @field_validator"
+
+risk_summary:
+  totals: { critical: 0, high: 1, medium: 2, low: 0 }
+  recommendations:
+    must_fix:
+      - "Fix failing tests to ensure functionality works"
+      - "Implement missing core methods"
+      - "Update to current Pydantic version"
+    monitor:
+      - "Verify database integration works properly"
+      - "Test API endpoints with real data"
+
+quality_score: 70  # 100 - (1*20) - (2*10) = 70
+
+evidence:
+  tests_reviewed: 50  # 25 extraction + 25 validation tests
+  risks_identified: 5
+  trace:
+    ac_covered: [1, 2, 3, 4, 5]  # All ACs implemented but with issues
+    ac_gaps: []  # No gaps in coverage, but quality issues exist
+
+nfr_validation:
+  security: { status: CONCERNS, notes: "Missing input sanitization and rate limiting" }
+  performance: { status: CONCERNS, notes: "Regex patterns not optimized for large text" }
+  reliability: { status: FAIL, notes: "Core functionality not working due to test failures" }
+  maintainability: { status: CONCERNS, notes: "Using deprecated Pydantic patterns" }
+
+recommendations:
+  immediate: # Must fix before production
+    - action: "Remove duplicate payment plan endpoint from main.py (lines 628-637)"
+      refs: ["app/main.py:628-637"]
+    - action: "Fix Pydantic namespace conflict for 'model_used' field"
+      refs: ["app/models/schemas.py"]
+  future: # Can be addressed later
+    - action: "Add rate limiting to payment plan detection endpoint"
+      refs: ["app/api/payment_plan.py"]
+    - action: "Optimize regex pattern performance"
+      refs: ["app/utils/payment_plan_extraction.py"]
+
+history:
+  - at: "2025-10-03T00:00:00Z"
+    gate: FAIL
+    note: "Initial review - critical implementation issues preventing functionality"

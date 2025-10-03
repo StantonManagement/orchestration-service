@@ -23,6 +23,12 @@ class AIResponse(BaseModel):
     created_at: datetime = Field(
         default_factory=datetime.utcnow, description="Response creation timestamp"
     )
+    payment_plan_detected: bool = Field(
+        default=False, description="Whether payment plan was detected in response"
+    )
+    payment_plan_data: Optional[Dict[str, Any]] = Field(
+        default=None, description="Extracted payment plan data if detected"
+    )
 
     class Config:
         json_encoders = {Decimal: str, datetime: lambda v: v.isoformat()}

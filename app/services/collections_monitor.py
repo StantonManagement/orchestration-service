@@ -1,13 +1,13 @@
 """
 Collections Monitor service client for tenant context retrieval.
 """
-import httpx
 from typing import Dict, Any
 import re
 import structlog
 from app.config import settings
-from app.core.circuit_breaker import CircuitBreaker
-from app.core.exceptions import ServiceUnavailableError
+from app.core.circuit_breaker import ServiceClient, CircuitBreakerConfig
+from app.core.retry import get_external_service_retry_config, create_async_retry_decorator
+from app.core.exceptions import ServiceUnavailableError, ExternalServiceError
 
 logger = structlog.get_logger(__name__)
 
@@ -16,12 +16,29 @@ class CollectionsMonitorClient:
     """Client for Collections Monitor service integration."""
 
     def __init__(self):
-        self.base_url = settings.monitor_url
-        self.timeout = settings.monitor_timeout
-        self.circuit_breaker = CircuitBreaker(
-            failure_threshold=settings.monitor_failure_threshold,
-            timeout=settings.circuit_breaker_timeout,
-            service_name="Collections Monitor",
+        self.service_name = "Collections Monitor"
+
+        # Create circuit breaker configuration
+        circuit_config = CircuitBreakerConfig(
+            failure_threshold=getattr(settings, 'monitor_failure_threshold', 5),
+            timeout=getattr(settings, 'circuit_breaker_timeout', 60),
+            success_threshold=3,
+            half_open_max_calls=5,
+        )
+
+        # Create service client with circuit breaker
+        self.service_client = ServiceClient(
+            service_name=self.service_name,
+            base_url=settings.monitor_url,
+            timeout_seconds=getattr(settings, 'monitor_timeout', 30),
+            circuit_breaker_config=circuit_config,
+        )
+
+        # Create retry decorator
+        retry_config = get_external_service_retry_config()
+        self.retry_decorator = create_async_retry_decorator(
+            config=retry_config,
+            service_name=self.service_name,
         )
 
     def _validate_tenant_id(self, tenant_id: str) -> None:
@@ -46,6 +63,7 @@ class CollectionsMonitorClient:
 
         logger.info("Tenant ID validated", tenant_id=tenant_id)
 
+    @self.retry_decorator
     async def get_tenant_context(self, tenant_id: str) -> Dict[str, Any]:
         """
         Retrieve tenant context from Collections Monitor service.
@@ -58,89 +76,39 @@ class CollectionsMonitorClient:
 
         Raises:
             ServiceUnavailableError: If service is unavailable or circuit is open
-            httpx.HTTPError: For HTTP-related errors
+            ExternalServiceError: For service-related errors
             ValueError: If tenant_id is invalid
         """
         self._validate_tenant_id(tenant_id)
 
-        return await self.circuit_breaker.call_async(
-            self._get_tenant_context_with_retry, tenant_id
-        )
-
-    async def _get_tenant_context_with_retry(self, tenant_id: str) -> Dict[str, Any]:
-        """Execute tenant context retrieval with retry logic."""
-        url = f"{self.base_url}/monitor/tenant/{tenant_id}"
-
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                logger.info(
-                    "Fetching tenant context",
-                    service="Collections Monitor",
-                    tenant_id=tenant_id,
-                    url=url,
-                )
-
-                response = await client.get(url)
-                response.raise_for_status()
-
-                data = response.json()
-                logger.info(
-                    "Successfully retrieved tenant context",
-                    service="Collections Monitor",
-                    tenant_id=tenant_id,
-                    data_keys=list(data.keys())
-                    if isinstance(data, dict)
-                    else "non-dict",
-                )
-
-                return data
-
-        except httpx.TimeoutException as e:
-            logger.error(
-                "Timeout retrieving tenant context",
-                service="Collections Monitor",
+            logger.info(
+                "Fetching tenant context",
+                service=self.service_name,
                 tenant_id=tenant_id,
-                timeout=self.timeout,
-                error=str(e),
-            )
-            raise ServiceUnavailableError(
-                "Collections Monitor", f"Request timeout after {self.timeout} seconds"
             )
 
-        except httpx.ConnectError as e:
-            logger.error(
-                "Connection error to Collections Monitor",
+            response_data = await self.service_client.get(f"monitor/tenant/{tenant_id}")
+
+            logger.info(
+                "Successfully retrieved tenant context",
+                service=self.service_name,
                 tenant_id=tenant_id,
-                url=url,
-                error=str(e),
-            )
-            raise ServiceUnavailableError(
-                "Collections Monitor", f"Connection error: {str(e)}"
+                data_keys=list(response_data.keys()) if response_data else [],
             )
 
-        except httpx.HTTPStatusError as e:
-            logger.error(
-                "HTTP error from Collections Monitor",
-                tenant_id=tenant_id,
-                status_code=e.response.status_code,
-                error=str(e),
-            )
-            if e.response.status_code >= 500:
-                raise ServiceUnavailableError(
-                    "Collections Monitor", f"Server error: {e.response.status_code}"
-                )
-            else:
-                raise  # Re-raise 4xx errors as-is
+            return response_data
 
         except Exception as e:
             logger.error(
-                "Unexpected error retrieving tenant context",
-                service="Collections Monitor",
+                "Failed to retrieve tenant context",
+                service=self.service_name,
                 tenant_id=tenant_id,
                 error=str(e),
             )
-            raise ServiceUnavailableError(
-                "Collections Monitor", f"Unexpected error: {str(e)}"
+            raise ExternalServiceError(
+                service_name=self.service_name,
+                message=f"Failed to retrieve tenant context: {str(e)}"
             )
 
     async def health_check(self) -> bool:
@@ -151,24 +119,32 @@ class CollectionsMonitorClient:
             True if service is healthy, False otherwise
         """
         try:
-            # Use a simple health check endpoint or just try to connect
-            url = f"{self.base_url}/health"
-            async with httpx.AsyncClient(timeout=10) as client:
-                response = await client.get(url)
-                is_healthy = response.status_code == 200
+            logger.info(
+                "Performing health check",
+                service=self.service_name,
+            )
 
-                logger.info(
-                    "Collections Monitor health check",
-                    healthy=is_healthy,
-                    status_code=response.status_code,
-                )
-
-                return is_healthy
+            return await self.service_client.health_check()
 
         except Exception as e:
-            logger.warning("Collections Monitor health check failed", error=str(e))
+            logger.error(
+                "Health check failed",
+                service=self.service_name,
+                error=str(e),
+            )
             return False
 
     def get_circuit_breaker_status(self) -> Dict[str, Any]:
-        """Get the current status of the circuit breaker."""
-        return self.circuit_breaker.get_status()
+        """
+        Get current circuit breaker status.
+
+        Returns:
+            Circuit breaker status information
+        """
+        return self.service_client.get_circuit_status()
+
+    async def close(self):
+        """Close the service client."""
+        await self.service_client.close()
+
+    

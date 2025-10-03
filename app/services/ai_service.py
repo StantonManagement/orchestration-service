@@ -21,6 +21,7 @@ from app.core.exceptions import (
     AIServiceRateLimitError,
 )
 from app.utils.confidence_scoring import ConfidenceScorer
+from app.utils.payment_plan_extraction import PaymentPlanExtractor
 
 logger = structlog.get_logger(__name__)
 
@@ -36,6 +37,7 @@ class AIService:
         self.temperature = settings.openai_temperature
         self.max_tokens = settings.openai_max_tokens
         self.confidence_scorer = ConfidenceScorer()
+        self.payment_plan_extractor = PaymentPlanExtractor()
         self._request_timestamps = []  # For rate limiting
 
     @retry(
@@ -119,6 +121,23 @@ class AIService:
             response_text = response.choices[0].message.content.strip()
             tokens_used = response.usage.total_tokens
 
+            # Check for payment plan markers in AI response
+            payment_plan_detected = self.detect_payment_plan_in_response(response_text)
+            payment_plan_data = None
+
+            if payment_plan_detected:
+                payment_plan_data = self.extract_payment_plan_from_response(response_text)
+                if payment_plan_data:
+                    # Convert payment plan to dict for storage
+                    payment_plan_data = {
+                        "weekly_amount": float(payment_plan_data.weekly_amount) if payment_plan_data.weekly_amount else None,
+                        "duration_weeks": payment_plan_data.duration_weeks,
+                        "start_date": payment_plan_data.start_date.isoformat() if payment_plan_data.start_date else None,
+                        "confidence_score": payment_plan_data.confidence_score,
+                        "extracted_from": payment_plan_data.extracted_from.value,
+                        "extraction_patterns": payment_plan_data.extraction_patterns
+                    }
+
             # Format response for SMS
             formatted_response = self.format_response_for_sms(
                 response_text, language_preference
@@ -138,12 +157,15 @@ class AIService:
                 confidence_score=confidence_score,
                 language_preference=language_preference,
                 tokens_used=tokens_used,
+                payment_plan_detected=payment_plan_detected,
+                payment_plan_data=payment_plan_data,
                 response_metadata={
                     "correlation_id": correlation_id,
                     "model": self.model,
                     "temperature": self.temperature,
                     "original_response": response_text,
                     "formatted_length": len(formatted_response),
+                    "payment_plan_detected": payment_plan_detected,
                 },
             )
 
@@ -318,6 +340,58 @@ Language Instructions:
 
         return formatted
 
+    def detect_payment_plan_in_response(self, response_text: str) -> Dict[str, Any]:
+        """
+        Detect payment plan information in AI response.
+
+        Args:
+            response_text: The AI-generated response text to analyze
+
+        Returns:
+            Dictionary with payment plan detection results
+        """
+        try:
+            # Extract payment plan using our utility
+            extracted_plan = self.payment_plan_extractor.extract_payment_plan(response_text)
+
+            # Check for structured markers
+            has_payment_plan_marker = any([
+                "PAYMENT_PLAN:" in response_text.upper(),
+                "payment plan" in response_text.lower(),
+                "$" in response_text and any(word in response_text.lower()
+                                          for word in ["week", "weekly", "per week"]),
+            ])
+
+            detection_result = {
+                "payment_plan_detected": has_payment_plan_marker or extracted_plan.is_complete(),
+                "extracted_plan": extracted_plan.to_dict() if extracted_plan.is_complete() else None,
+                "has_structured_marker": has_payment_plan_marker,
+                "confidence_level": extracted_plan.confidence.value if extracted_plan else "low"
+            }
+
+            if detection_result["payment_plan_detected"]:
+                logger.info(
+                    "Payment plan detected in AI response",
+                    confidence=detection_result["confidence_level"],
+                    has_structured_marker=detection_result["has_structured_marker"],
+                    is_complete=extracted_plan.is_complete() if extracted_plan else False
+                )
+
+            return detection_result
+
+        except Exception as e:
+            logger.error(
+                "Error detecting payment plan in AI response",
+                error=str(e)
+            )
+            return {
+                "payment_plan_detected": False,
+                "extracted_plan": None,
+                "has_structured_marker": False,
+                "confidence_level": "low",
+                "error": str(e)
+            }
+
     async def _check_rate_limit(self, correlation_id: str) -> None:
         """Check if we're within rate limits."""
         now = datetime.utcnow()
@@ -387,3 +461,38 @@ Language Instructions:
                 error=str(e),
             )
             raise
+
+    def detect_payment_plan_in_response(self, response_text: str) -> bool:
+        """
+        Detect if AI response contains payment plan information.
+
+        Args:
+            response_text: AI-generated response text
+
+        Returns:
+            True if payment plan markers are detected
+        """
+        try:
+            # Use the payment plan extractor to check for payment plans
+            payment_plan = self.payment_plan_extractor.extract_from_ai_response(response_text)
+            return payment_plan is not None
+
+        except Exception as e:
+            logger.error(f"Error detecting payment plan in response: {str(e)}")
+            return False
+
+    def extract_payment_plan_from_response(self, response_text: str):
+        """
+        Extract payment plan from AI response.
+
+        Args:
+            response_text: AI-generated response text
+
+        Returns:
+            Extracted payment plan or None
+        """
+        try:
+            return self.payment_plan_extractor.extract_from_ai_response(response_text)
+        except Exception as e:
+            logger.error(f"Error extracting payment plan from response: {str(e)}")
+            return None
