@@ -4,6 +4,7 @@ SMS Agent service client for conversation history retrieval.
 from typing import Dict, Any, List
 import re
 import structlog
+import httpx
 from datetime import datetime
 from app.config import settings
 from app.core.circuit_breaker import ServiceClient, CircuitBreakerConfig
@@ -34,6 +35,9 @@ class SMSAgentClient:
             timeout_seconds=getattr(settings, 'sms_agent_timeout', 30),
             circuit_breaker_config=circuit_config,
         )
+
+        # Store base_url for backward compatibility
+        self.base_url = settings.sms_agent_url
 
         # Create retry decorator
         retry_config = get_external_service_retry_config()

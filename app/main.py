@@ -12,6 +12,11 @@ from fastapi.responses import JSONResponse
 
 from app.core.config import get_settings
 from app.core.logging import setup_logging, get_logger
+from app.core.middleware import (
+    CorrelationIDMiddleware,
+    PerformanceMonitoringMiddleware,
+    MetricsCollectionMiddleware
+)
 from app.services.external import ServiceClients
 from app.services.openai_service import OpenAIService
 from app.services.database import db_service
@@ -22,6 +27,8 @@ from app.models.schemas import (
 )
 from app.api.payment_plan import router as payment_plan_router
 from app.api.escalation import router as escalation_router
+from app.api.health import router as health_router
+from app.api.metrics import router as metrics_router
 from app.core.dependencies import get_escalation_service
 
 # Initialize logging
@@ -44,6 +51,11 @@ app = FastAPI(
 service_clients = ServiceClients()
 openai_service = OpenAIService()
 
+# Add metrics and tracing middleware
+app.add_middleware(CorrelationIDMiddleware)
+app.add_middleware(PerformanceMonitoringMiddleware, slow_request_threshold_ms=1000.0)
+app.add_middleware(MetricsCollectionMiddleware)
+
 # CORS middleware
 if settings.enable_cors:
     app.add_middleware(
@@ -57,6 +69,8 @@ if settings.enable_cors:
 # Include API routers
 app.include_router(payment_plan_router)
 app.include_router(escalation_router)
+app.include_router(health_router, prefix="/api/v1", tags=["health"])
+app.include_router(metrics_router, tags=["metrics"])
 
 
 @app.on_event("startup")
@@ -95,46 +109,6 @@ async def shutdown_event():
         logger.error("Failed to stop escalation monitoring services", error=str(e))
 
 
-# Health Endpoints
-@app.get("/health", response_model=HealthResponse)
-async def health_check():
-    """Basic health check endpoint."""
-    try:
-        return HealthResponse(
-            status="healthy",
-            version=settings.service_version,
-            checks={
-                "database": await db_service.health_check(),
-                "external_services": await service_clients.health_check()
-            }
-        )
-    except Exception as e:
-        logger.error("Health check failed", error=str(e))
-        return HealthResponse(
-            status="unhealthy",
-            version=settings.service_version,
-            checks={"error": str(e)}
-        )
-
-
-@app.get("/health/dependencies", response_model=DependencyHealthResponse)
-async def dependency_health_check():
-    """Check health of all external service dependencies."""
-    try:
-        service_health = await service_clients.health_check()
-
-        overall_status = "healthy" if all(service_health.values()) else "unhealthy"
-
-        return DependencyHealthResponse(
-            status=overall_status,
-            services=service_health
-        )
-    except Exception as e:
-        logger.error("Dependency health check failed", error=str(e))
-        return DependencyHealthResponse(
-            status="unhealthy",
-            services={"error": str(e)}
-        )
 
 
 # Main SMS Orchestration Endpoint
@@ -615,33 +589,6 @@ async def retry_workflow(workflow_id: uuid.UUID, retry_data: RetryRequest):
         )
 
 
-# Metrics Endpoint
-@app.get("/orchestrate/metrics", response_model=MetricsResponse)
-async def get_metrics():
-    """Get service metrics."""
-    try:
-        # Get database metrics
-        db_metrics = await db_service.get_workflow_metrics()
-
-        # Get today's metrics
-        metrics = {
-            "last_hour": {
-                "sms_processed": 0,  # Would be calculated from recent workflows
-                "ai_responses": 0,
-                "auto_approval_rate": 0.0,
-                "avg_response_time_ms": 0
-            },
-            "today": db_metrics
-        }
-
-        return MetricsResponse(**metrics)
-
-    except Exception as e:
-        logger.error("Failed to get metrics", error=str(e))
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal server error"
-        )
 
 
 

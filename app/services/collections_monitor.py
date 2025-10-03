@@ -34,6 +34,9 @@ class CollectionsMonitorClient:
             circuit_breaker_config=circuit_config,
         )
 
+        # Store base_url for backward compatibility
+        self.base_url = settings.monitor_url
+
         # Create retry decorator
         retry_config = get_external_service_retry_config()
         self.retry_decorator = create_async_retry_decorator(
@@ -63,7 +66,6 @@ class CollectionsMonitorClient:
 
         logger.info("Tenant ID validated", tenant_id=tenant_id)
 
-    @self.retry_decorator
     async def get_tenant_context(self, tenant_id: str) -> Dict[str, Any]:
         """
         Retrieve tenant context from Collections Monitor service.
@@ -88,7 +90,10 @@ class CollectionsMonitorClient:
                 tenant_id=tenant_id,
             )
 
-            response_data = await self.service_client.get(f"monitor/tenant/{tenant_id}")
+            # Apply retry logic
+            response_data = await self.retry_decorator(
+                self.service_client.get
+            )(f"monitor/tenant/{tenant_id}")
 
             logger.info(
                 "Successfully retrieved tenant context",

@@ -213,10 +213,10 @@ async def dependencies_health_check(request: Request):
         response_time=sms_response_time,
     )
 
-    # For services not yet implemented, check if fallback is available
-    notification_service_available = "notification_service" in degradation_manager.fallback_handlers
-    supabase_available = "supabase" in degradation_manager.fallback_handlers
-    openai_available = "openai" in degradation_manager.fallback_handlers
+    # For services not yet implemented, mark as False but check if fallback is available
+    notification_service_available = False  # Not implemented yet
+    supabase_available = False  # Not implemented yet
+    openai_available = False  # Not implemented yet
 
     # Determine overall status
     services_healthy = sum([
@@ -327,17 +327,17 @@ async def dependencies_health_check_detailed(request: Request):
         "notification_service": ServiceHealthDetail(
             healthy=False,
             last_check=time.time(),
-            fallback_available="notification_service" in degradation_manager.fallback_handlers,
+            fallback_available=False,  # Not implemented yet
         ),
         "supabase": ServiceHealthDetail(
             healthy=False,
             last_check=time.time(),
-            fallback_available="supabase" in degradation_manager.fallback_handlers,
+            fallback_available=False,  # Not implemented yet
         ),
         "openai": ServiceHealthDetail(
             healthy=False,
             last_check=time.time(),
-            fallback_available="openai" in degradation_manager.fallback_handlers,
+            fallback_available=False,  # Not implemented yet
         ),
     }
 
