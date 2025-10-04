@@ -29,6 +29,7 @@ from app.api.payment_plan import router as payment_plan_router
 from app.api.escalation import router as escalation_router
 from app.api.health import router as health_router
 from app.api.metrics import router as metrics_router
+from app.api.orchestration import router as orchestration_router
 from app.core.dependencies import get_escalation_service
 
 # Initialize logging
@@ -69,7 +70,8 @@ if settings.enable_cors:
 # Include API routers
 app.include_router(payment_plan_router)
 app.include_router(escalation_router)
-app.include_router(health_router, prefix="/api/v1", tags=["health"])
+app.include_router(orchestration_router)
+app.include_router(health_router, tags=["health"])
 app.include_router(metrics_router, tags=["metrics"])
 
 
@@ -537,71 +539,12 @@ async def get_workflow_status(conversation_id: uuid.UUID):
         )
 
 
-# Retry Mechanism
-@app.post("/orchestrate/retry/{workflow_id}")
-async def retry_workflow(workflow_id: uuid.UUID, retry_data: RetryRequest):
-    """Retry a failed workflow."""
-    logger.info("Retrying workflow", workflow_id=str(workflow_id), reason=retry_data.reason)
-
-    try:
-        # Get workflow
-        workflow = await db_service.get_workflow(workflow_id)
-        if not workflow:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Workflow not found"
-            )
-
-        # Check if workflow can be retried
-        if workflow["status"] not in ["failed", "escalated"]:
-            if not retry_data.force_retry:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Workflow cannot be retried"
-                )
-
-        # Create retry attempt record
-        await db_service.create_retry_attempt(workflow_id, retry_data.reason)
-
-        # Reset workflow status for retry
-        await db_service.update_workflow(workflow_id, {
-            "status": WorkflowStatus.PROCESSING,
-            "error_message": None,
-            "metadata": {
-                **workflow.get("metadata", {}),
-                "retry_reason": retry_data.reason,
-                "retry_attempted_at": datetime.utcnow().isoformat()
-            }
-        })
-
-        # Note: In a real implementation, you would restart the workflow process here
-        # For now, we just mark it as ready for retry
-
-        return {"status": "retry_initiated", "workflow_id": str(workflow_id)}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Failed to retry workflow", workflow_id=str(workflow_id), error=str(e))
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal server error"
-        )
 
 
 
 
 
 
-@app.post("/orchestrate/escalate")
-async def escalate_conversation(escalation_data: EscalationRequest):
-    """Handle conversation escalation."""
-    logger.info("Processing escalation", conversation_id=escalation_data.conversation_id, type=escalation_data.escalation_type)
-
-    # Store escalation and notify appropriate parties
-    # This would be fully implemented in Epic 2
-
-    return {"status": "escalation_processed"}
 
 
 if __name__ == "__main__":

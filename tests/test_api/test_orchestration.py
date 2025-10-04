@@ -6,6 +6,10 @@ from fastapi.testclient import TestClient
 from httpx import AsyncClient
 import uuid
 from datetime import datetime
+from unittest.mock import Mock, patch, AsyncMock
+
+from app.models.schemas import EscalationRequest, RetryRequest
+from app.services.escalation_service import EscalationService
 
 
 class TestReceiveSMSEndpoint:
@@ -264,3 +268,190 @@ class TestReceiveSMSEndpoint:
         now = datetime.utcnow()
         time_diff = now.replace(tzinfo=None) - parsed_timestamp.replace(tzinfo=None)
         assert time_diff.total_seconds() < 60
+
+
+@pytest.fixture
+def mock_escalation_service():
+    """Mock escalation service fixture."""
+    with patch('app.api.orchestration.get_escalation_service') as mock:
+        yield mock
+
+
+@pytest.fixture
+def mock_workflow_service():
+    """Mock workflow service fixture."""
+    with patch('app.api.orchestration.workflow_service') as mock:
+        yield mock
+
+
+@pytest.fixture
+def mock_db_service():
+    """Mock database service fixture."""
+    with patch('app.api.orchestration.db_service') as mock:
+        yield mock
+
+
+@pytest.fixture
+def sample_escalation_request():
+    """Sample escalation request fixture."""
+    return {
+        "conversation_id": str(uuid.uuid4()),
+        "workflow_id": str(uuid.uuid4()),
+        "escalation_type": "manual",
+        "reason": "Customer requested supervisor",
+        "severity": "high",
+        "escalated_by": "manager_123",
+        "customer_phone": "+1234567890",
+        "metadata": {"previous_attempts": 2}
+    }
+
+
+@pytest.fixture
+def sample_retry_request():
+    """Sample retry request fixture."""
+    return {
+        "reason": "Service temporarily unavailable",
+        "force_retry": False,
+        "recovery_strategy": "wait_and_retry",
+        "notes": "Customer service confirmed issue resolved"
+    }
+
+
+class TestEscalationEndpoint:
+    """Test POST /orchestrate/escalate endpoint."""
+
+    def test_escalate_conversation_success(
+        self, client: TestClient, mock_escalation_service, sample_escalation_request
+    ):
+        """Test successful conversation escalation."""
+        escalation_service_instance = Mock(spec=EscalationService)
+        escalation_service_instance.create_escalation = AsyncMock(return_value=Mock(
+            escalation_id=uuid.uuid4(),
+            escalated_at=datetime.utcnow()
+        ))
+        mock_escalation_service.return_value = escalation_service_instance
+
+        response = client.post("/orchestrate/escalate", json=sample_escalation_request)
+
+        assert response.status_code == 200
+        response_data = response.json()
+        assert response_data["success"] is True
+        assert "escalation_id" in response_data
+        assert response_data["conversation_id"] == sample_escalation_request["conversation_id"]
+        assert response_data["status"] == "escalated_processed"
+        assert "escalated_at" in response_data
+
+    def test_escalate_conversation_service_error(
+        self, client: TestClient, mock_escalation_service, sample_escalation_request
+    ):
+        """Test escalation with service error."""
+        mock_escalation_service.return_value = Mock(spec=EscalationService)
+        mock_escalation_service.return_value.create_escalation = AsyncMock(
+            side_effect=Exception("Service unavailable")
+        )
+
+        response = client.post("/orchestrate/escalate", json=sample_escalation_request)
+
+        assert response.status_code == 500
+        assert "Failed to process escalation" in response.json()["detail"]
+
+    def test_escalate_conversation_with_correlation_id(
+        self, client: TestClient, mock_escalation_service, sample_escalation_request
+    ):
+        """Test escalation with correlation ID header."""
+        escalation_service_instance = Mock(spec=EscalationService)
+        escalation_service_instance.create_escalation = AsyncMock(return_value=Mock(
+            escalation_id=uuid.uuid4(),
+            escalated_at=datetime.utcnow()
+        ))
+        mock_escalation_service.return_value = escalation_service_instance
+
+        headers = {"X-Correlation-ID": "test-correlation-123"}
+        response = client.post("/orchestrate/escalate", json=sample_escalation_request, headers=headers)
+
+        assert response.status_code == 200
+
+
+class TestRetryEndpoint:
+    """Test POST /orchestrate/retry/{workflow_id} endpoint."""
+
+    def test_retry_workflow_success(
+        self, client: TestClient, mock_db_service, mock_workflow_service, sample_retry_request
+    ):
+        """Test successful workflow retry."""
+        workflow_id = str(uuid.uuid4())
+
+        mock_db_service.get_workflow = AsyncMock(return_value={
+            "id": workflow_id,
+            "status": "failed",
+            "conversation_id": str(uuid.uuid4())
+        })
+
+        mock_workflow_service.create_workflow_step = AsyncMock(return_value=str(uuid.uuid4()))
+
+        response = client.post(f"/orchestrate/retry/{workflow_id}", json=sample_retry_request)
+
+        assert response.status_code == 200
+        response_data = response.json()
+        assert response_data["success"] is True
+        assert response_data["workflow_id"] == workflow_id
+        assert response_data["status"] == "retry_initiated"
+        assert "retry_attempted_at" in response_data
+        assert "message" in response_data
+
+    def test_retry_workflow_invalid_uuid(self, client: TestClient, sample_retry_request):
+        """Test retry with invalid workflow ID format."""
+        response = client.post("/orchestrate/retry/invalid-uuid", json=sample_retry_request)
+
+        assert response.status_code == 400
+        assert "Invalid workflow ID format" in response.json()["detail"]
+
+    def test_retry_workflow_not_found(
+        self, client: TestClient, mock_db_service, sample_retry_request
+    ):
+        """Test retry for non-existent workflow."""
+        workflow_id = str(uuid.uuid4())
+        mock_db_service.get_workflow = AsyncMock(return_value=None)
+
+        response = client.post(f"/orchestrate/retry/{workflow_id}", json=sample_retry_request)
+
+        assert response.status_code == 404
+        assert "Workflow not found" in response.json()["detail"]
+
+    def test_retry_workflow_wrong_status(
+        self, client: TestClient, mock_db_service, sample_retry_request
+    ):
+        """Test retry for workflow in non-retryable status."""
+        workflow_id = str(uuid.uuid4())
+        mock_db_service.get_workflow = AsyncMock(return_value={
+            "id": workflow_id,
+            "status": "completed",
+            "conversation_id": str(uuid.uuid4())
+        })
+
+        response = client.post(f"/orchestrate/retry/{workflow_id}", json=sample_retry_request)
+
+        assert response.status_code == 400
+        assert "Cannot retry workflow in status: completed" in response.json()["detail"]
+
+    def test_retry_workflow_force_retry(
+        self, client: TestClient, mock_db_service, mock_workflow_service, sample_retry_request
+    ):
+        """Test force retry for workflow in non-retryable status."""
+        sample_retry_request["force_retry"] = True
+        workflow_id = str(uuid.uuid4())
+
+        mock_db_service.get_workflow = AsyncMock(return_value={
+            "id": workflow_id,
+            "status": "completed",  # Normally not retryable
+            "conversation_id": str(uuid.uuid4())
+        })
+
+        mock_db_service.update_workflow_status = AsyncMock(return_value=None)
+        mock_workflow_service.create_workflow_step = AsyncMock(return_value=str(uuid.uuid4()))
+
+        response = client.post(f"/orchestrate/retry/{workflow_id}", json=sample_retry_request)
+
+        assert response.status_code == 200
+        response_data = response.json()
+        assert response_data["success"] is True

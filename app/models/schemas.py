@@ -73,7 +73,7 @@ class SMSResponse(BaseModel):
 
 
 # Escalation Request/Response Models (Story 2.2)
-class EscalationRequest(BaseModel):
+class ManualEscalationRequest(BaseModel):
     """Manual escalation request data (Story 2.2)."""
     workflow_id: str = Field(..., description="Workflow identifier")
     customer_phone: str = Field(..., description="Customer phone number")
@@ -170,8 +170,9 @@ class PaymentPlanDetection(BaseModel):
 
 class EscalationRequest(BaseModel):
     """Escalation request data."""
-    conversation_id: UUID = Field(..., description="Conversation identifier")
-    escalation_type: EscalationType = Field(..., description="Type of escalation")
+    conversation_id: str = Field(..., description="Conversation identifier")
+    workflow_id: str = Field(..., description="Workflow identifier")
+    escalation_type: EscalationType = Field(EscalationType.MANUAL, description="Type of escalation")
     reason: str = Field(..., min_length=1, description="Escalation reason")
     severity: str = Field(..., pattern="^(low|medium|high|critical)$", description="Severity level")
     auto_detected: bool = Field(True, description="Whether escalation was auto-detected")
@@ -182,6 +183,8 @@ class RetryRequest(BaseModel):
     """Workflow retry request."""
     reason: str = Field(..., min_length=1, description="Reason for retry")
     force_retry: bool = Field(False, description="Force retry even if not typically retriable")
+    recovery_strategy: Optional[str] = Field(None, description="Recovery strategy to use")
+    notes: Optional[str] = Field(None, description="Additional notes about the retry")
 
 
 # Response Models

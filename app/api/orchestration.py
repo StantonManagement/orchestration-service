@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from app.schemas.incoming_sms import IncomingSMS, SMSResponse
 from app.schemas.workflow import CreateWorkflowRequest, CreateWorkflowStepRequest
+from app.models.schemas import EscalationRequest, RetryRequest
 from app.services.workflow_service import WorkflowService
 from app.models.workflow import StepType
 from app.core.exceptions import ValidationError as CustomValidationError, WorkflowError, ExternalServiceError, ServiceUnavailableError
@@ -15,6 +16,7 @@ from app.core.logging import get_logger
 from app.services.escalation_service import EscalationService
 from app.core.dependencies import get_escalation_service
 from app.core.degradation import degradation_manager
+from app.services.database import db_service
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -382,3 +384,178 @@ def _check_for_payment_plan(
             correlation_id=correlation_id
         )
         return False
+
+
+@router.post(
+    "/orchestrate/escalate",
+    status_code=status.HTTP_200_OK,
+)
+async def escalate_conversation(
+    request: Request,
+    escalation_data: EscalationRequest,
+):
+    """Handle conversation escalation."""
+    correlation_id = request.headers.get("X-Correlation-ID", "unknown")
+
+    logger.info(
+        "Processing escalation",
+        conversation_id=escalation_data.conversation_id,
+        escalation_type=escalation_data.escalation_type,
+        correlation_id=correlation_id
+    )
+
+    try:
+        # Integrate with escalation service for proper handling
+        escalation_service = EscalationService()
+
+        # Create escalation event
+        escalation_result = await escalation_service.create_escalation(
+            conversation_id=escalation_data.conversation_id,
+            escalation_type=escalation_data.escalation_type,
+            reason=escalation_data.reason,
+            severity=escalation_data.severity,
+            escalated_by=escalation_data.escalated_by,
+            metadata=escalation_data.metadata
+        )
+
+        # Update workflow status if applicable
+        if escalation_data.workflow_id:
+            try:
+                await workflow_service.update_workflow_status(
+                    escalation_data.workflow_id,
+                    "escalated",
+                    {
+                        "escalation_id": escalation_result.escalation_id,
+                        "escalation_type": escalation_data.escalation_type,
+                        "escalated_at": escalation_result.escalated_at.isoformat(),
+                        "correlation_id": correlation_id
+                    }
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to update workflow status for escalation",
+                    workflow_id=escalation_data.workflow_id,
+                    error=str(e),
+                    correlation_id=correlation_id
+                )
+
+        return {
+            "success": True,
+            "escalation_id": str(escalation_result.escalation_id),
+            "conversation_id": escalation_data.conversation_id,
+            "status": "escalated_processed",
+            "escalated_at": escalation_result.escalated_at.isoformat()
+        }
+
+    except Exception as e:
+        logger.error(
+            "Failed to process escalation",
+            conversation_id=escalation_data.conversation_id,
+            error=str(e),
+            correlation_id=correlation_id
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to process escalation"
+        )
+
+
+@router.post(
+    "/orchestrate/retry/{workflow_id}",
+    status_code=status.HTTP_200_OK,
+)
+async def retry_workflow(
+    request: Request,
+    workflow_id: str,
+    retry_data: RetryRequest,
+):
+    """Retry a failed workflow."""
+    correlation_id = request.headers.get("X-Correlation-ID", "unknown")
+
+    logger.info(
+        "Retrying workflow",
+        workflow_id=workflow_id,
+        reason=retry_data.reason,
+        correlation_id=correlation_id
+    )
+
+    try:
+        # Convert string to UUID if needed
+        try:
+            workflow_uuid = uuid.UUID(workflow_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid workflow ID format"
+            )
+
+        # Get workflow
+        workflow = await db_service.get_workflow(workflow_uuid)
+        if not workflow:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Workflow not found"
+            )
+
+        # Check if workflow can be retried
+        if workflow["status"] not in ["failed", "escalated"]:
+            if not retry_data.force_retry:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Cannot retry workflow in status: {workflow['status']}"
+                )
+
+        # Update workflow status to retrying
+        await db_service.update_workflow_status(
+            workflow_uuid,
+            "retrying",
+            {
+                "retry_reason": retry_data.reason,
+                "force_retry": retry_data.force_retry,
+                "recovery_strategy": retry_data.recovery_strategy,
+                "retry_initiated_at": datetime.utcnow().isoformat(),
+                "correlation_id": correlation_id
+            }
+        )
+
+        # Create workflow step for retry
+        await workflow_service.create_workflow_step(
+            workflow_uuid,
+            {
+                "step_name": "workflow_retry",
+                "step_type": "retry",
+                "input_data": {
+                    "reason": retry_data.reason,
+                    "force_retry": retry_data.force_retry,
+                    "recovery_strategy": retry_data.recovery_strategy,
+                    "retry_initiated_at": datetime.utcnow().isoformat(),
+                    "original_status": workflow["status"],
+                    "correlation_id": correlation_id
+                }
+            }
+        )
+
+        # Note: In a real implementation, you would restart the workflow process here
+        # For now, we just mark it as ready for retry
+
+        return {
+            "success": True,
+            "workflow_id": workflow_id,
+            "status": "retry_initiated",
+            "retry_attempted_at": datetime.utcnow().isoformat(),
+            "message": "Workflow retry initiated successfully"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "Failed to retry workflow",
+            workflow_id=workflow_id,
+            error=str(e),
+            correlation_id=correlation_id
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error"
+        )
