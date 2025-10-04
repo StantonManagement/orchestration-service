@@ -93,23 +93,462 @@ docker-compose up --build
 ### Health Check
 
 ```bash
-curl http://localhost:8000/health
+curl http://localhost:8000/health/dependencies
 ```
 
 ## API Endpoints
 
-### Health Endpoints
-- `GET /health` - Basic service health
-- `GET /health/dependencies` - External service dependency health
+### 🏥 Health Endpoints
 
-### Orchestration Endpoints
-- `POST /orchestrate/sms-received` - Main SMS processing endpoint
-- `POST /orchestrate/approve-response` - Manager approval workflow
-- `POST /orchestrate/payment-plan-detected` - Process detected payment plan
-- `POST /orchestrate/escalate` - Handle conversation escalation
-- `POST /orchestrate/retry/{workflow_id}` - Retry failed workflow
-- `GET /orchestrate/workflow/{conversation_id}/status` - Get workflow status
-- `GET /orchestrate/metrics` - Service metrics
+#### 1. Basic Service Health
+```bash
+curl -X GET "http://localhost:8000/health" \
+  -H "Content-Type: application/json" \
+  -H "X-Correlation-ID: test-$(uuidgen)"
+```
+
+**Response:**
+```json
+{
+  "status": "healthy",
+  "version": "1.0.0",
+  "uptime_seconds": 3600,
+  "timestamp": "2025-01-15T10:30:00Z",
+  "service_name": "orchestrator-service"
+}
+```
+
+#### 2. Detailed Service Health
+```bash
+curl -X GET "http://localhost:8000/health/detailed" \
+  -H "Content-Type: application/json" \
+  -H "X-Correlation-ID: test-$(uuidgen)"
+```
+
+**Response:**
+```json
+{
+  "status": "healthy",
+  "version": "1.0.0",
+  "uptime_seconds": 3600,
+  "timestamp": "2025-01-15T10:30:00Z",
+  "service_name": "orchestrator-service",
+  "checks": {
+    "database": "healthy",
+    "external_services": "healthy",
+    "memory": "healthy"
+  }
+}
+```
+
+#### 3. Check Dependencies Health
+```bash
+curl -X GET "http://localhost:8000/health/dependencies" \
+  -H "Content-Type: application/json" \
+  -H "X-Correlation-ID: test-$(uuidgen)"
+```
+
+**Response:**
+```json
+{
+  "collections_monitor": true,
+  "sms_agent": true,
+  "notification_service": false,
+  "supabase": true,
+  "openai": true,
+  "overall_status": "degraded",
+  "degradation_mode": "full"
+}
+```
+
+### 🎯 Core Orchestration Endpoints
+
+#### 1. SMS Processing (Main Workflow Entry Point)
+```bash
+curl -X POST "http://localhost:8000/orchestrate/sms-received" \
+  -H "Content-Type: application/json" \
+  -H "X-Correlation-ID: test-$(uuidgen)" \
+  -d '{
+    "tenant_id": "tenant_12345",
+    "phone_number": "+1234567890",
+    "content": "I can pay $50 per week for 3 months",
+    "conversation_id": "conv_abc123",
+    "timestamp": "2025-01-15T10:30:00Z",
+    "direction": "inbound"
+  }'
+```
+
+**Response:**
+```json
+{
+  "status": "processed",
+  "conversation_id": "conv_abc123",
+  "workflow_id": "workflow-12345678-1234-1234-1234-123456789012",
+  "timestamp": "2025-01-15T10:30:05Z"
+}
+```
+
+#### 2. Manager Approval Workflow
+```bash
+curl -X POST "http://localhost:8000/orchestrate/approve-response" \
+  -H "Content-Type: application/json" \
+  -H "X-Correlation-ID: test-$(uuidgen)" \
+  -d '{
+    "response_queue_id": "resp_789def",
+    "action": "approve",
+    "approved_text": "Thank you for your payment arrangement. We have set up a payment plan of $50 per week for 12 weeks starting next Friday.",
+    "manager_id": "manager_456",
+    "notes": "Customer agreed to reasonable payment terms"
+  }'
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Response approved and sent successfully",
+  "action": "approve",
+  "processed_at": "2025-01-15T10:35:00Z"
+}
+```
+
+#### 3. Payment Plan Detection
+```bash
+curl -X POST "http://localhost:8000/orchestrate/payment-plan-detected" \
+  -H "Content-Type: application/json" \
+  -H "X-Correlation-ID: test-$(uuidgen)" \
+  -d '{
+    "conversation_id": "conv_abc123",
+    "tenant_id": "tenant_12345",
+    "message_content": "I can pay $50 per week for 3 months",
+    "ai_response": "That sounds like a reasonable payment arrangement. I have noted your payment plan proposal.",
+    "weekly_amount": 50.0,
+    "weeks": 12,
+    "start_date": "2025-01-22T00:00:00Z",
+    "confidence": 0.92
+  }'
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "payment_plan_id": "pp_456ghi",
+  "status": "validated",
+  "validation_details": {
+    "is_valid": true,
+    "issues": [],
+    "auto_approvable": true,
+    "total_amount": 600.0,
+    "covers_debt": true
+  },
+  "processed_at": "2025-01-15T10:32:00Z"
+}
+```
+
+#### 4. Conversation Escalation
+```bash
+curl -X POST "http://localhost:8000/orchestrate/escalate" \
+  -H "Content-Type: application/json" \
+  -H "X-Correlation-ID: test-$(uuidgen)" \
+  -d '{
+    "conversation_id": "conv_abc123",
+    "workflow_id": "workflow-12345678-1234-1234-1234-123456789012",
+    "escalation_type": "manual",
+    "reason": "Customer requested supervisor assistance regarding payment terms",
+    "severity": "medium",
+    "auto_detected": false,
+    "escalated_by": "manager_456",
+    "metadata": {
+      "original_request": "Modification to payment plan terms",
+      "customer_phone": "+1234567890"
+    }
+  }'
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "escalation_id": "esc_789jkl",
+  "conversation_id": "conv_abc123",
+  "status": "escalated_processed",
+  "escalated_at": "2025-01-15T10:40:00Z",
+  "assigned_to": "supervisor_team"
+}
+```
+
+#### 5. Workflow Status Check
+```bash
+curl -X GET "http://localhost:8000/orchestrate/workflow/conv_abc123/status" \
+  -H "Content-Type: application/json" \
+  -H "X-Correlation-ID: test-$(uuidgen)"
+```
+
+**Response:**
+```json
+{
+  "conversation_id": "conv_abc123",
+  "workflow_id": "workflow-12345678-1234-1234-1234-123456789012",
+  "status": "completed",
+  "current_step": "response_sent",
+  "steps_completed": [
+    "sms_received",
+    "ai_response_generated",
+    "manager_approval",
+    "response_sent"
+  ],
+  "created_at": "2025-01-15T10:30:00Z",
+  "updated_at": "2025-01-15T10:35:00Z",
+  "metadata": {
+    "processing_time_seconds": 300,
+    "ai_confidence": 0.87,
+    "auto_approved": false
+  }
+}
+```
+
+#### 6. Failed Workflow Retry
+```bash
+curl -X POST "http://localhost:8000/orchestrate/retry/workflow-12345678-1234-1234-1234-123456789012" \
+  -H "Content-Type: application/json" \
+  -H "X-Correlation-ID: test-$(uuidgen)" \
+  -d '{
+    "reason": "External service temporarily unavailable, now recovered",
+    "force_retry": false,
+    "recovery_strategy": "wait_and_retry",
+    "notes": "Customer service confirmed the issue has been resolved"
+  }'
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "workflow_id": "workflow-12345678-1234-1234-1234-123456789012",
+  "status": "retry_initiated",
+  "retry_attempted_at": "2025-01-15T10:45:00Z",
+  "message": "Workflow retry initiated successfully. Monitoring progress...",
+  "retry_id": "retry_456mno"
+}
+```
+
+#### 7. Service Metrics
+```bash
+curl -X GET "http://localhost:8000/orchestrate/metrics?hours=24&format=json" \
+  -H "Content-Type: application/json" \
+  -H "X-Correlation-ID: test-$(uuidgen)"
+```
+
+**Response:**
+```json
+{
+  "timeframe": {
+    "timeframe_hours": 24,
+    "sms_metrics": {
+      "received": 145,
+      "processed": 142,
+      "failed": 3,
+      "rate_per_hour": 6.0
+    },
+    "ai_metrics": {
+      "responses": 142,
+      "avg_response_time_ms": 1250,
+      "avg_confidence": 0.84,
+      "response_rate": 0.98
+    },
+    "approval_metrics": {
+      "total": 85,
+      "approved": 78,
+      "rejected": 7,
+      "auto_approval_rate": 0.42,
+      "avg_approval_time_ms": 1800
+    },
+    "escalation_metrics": {
+      "total": 12,
+      "by_type": {
+        "low_confidence": 8,
+        "manual": 3,
+        "timeout": 1
+      },
+      "by_severity": {
+        "medium": 9,
+        "high": 3
+      },
+      "rate_per_hour": 0.5,
+      "avg_resolution_time_ms": 45000
+    },
+    "payment_plan_metrics": {
+      "detected": 28,
+      "validated": 25,
+      "auto_approved": 20,
+      "detection_rate": 0.20,
+      "validation_rate": 0.89
+    }
+  },
+  "dashboard": {
+    "last_hour": {
+      "sms_received": 6,
+      "ai_responses": 6,
+      "approvals_pending": 2,
+      "escalations": 0
+    },
+    "today": {
+      "total_conversations": 145,
+      "completed_workflows": 142,
+      "payment_plans": 28,
+      "escalations": 12
+    },
+    "system_health": {
+      "collections_monitor": {
+        "healthy": 140,
+        "unhealthy": 5,
+        "availability": 0.97,
+        "response_time_ms": 150.0,
+        "last_check": "2025-01-15T10:45:00Z"
+      },
+      "sms_agent": {
+        "healthy": 143,
+        "unhealthy": 2,
+        "availability": 0.99,
+        "response_time_ms": 85.0,
+        "last_check": "2025-01-15T10:45:00Z"
+      }
+    }
+  },
+  "generated_at": "2025-01-15T10:45:00Z",
+  "filters_applied": {
+    "hours": 24,
+    "tenant_id": null
+  }
+}
+```
+
+### 💳 Payment Plan Management Endpoints
+
+#### 8. Get Payment Plans by Conversation ID
+```bash
+curl -X GET "http://localhost:8000/orchestrate/payment-plans/conv_abc123" \
+  -H "Content-Type: application/json" \
+  -H "X-Correlation-ID: test-$(uuidgen)"
+```
+
+**Response:**
+```json
+{
+  "conversation_id": "conv_abc123",
+  "payment_plans": [
+    {
+      "payment_plan_id": "pp_456ghi",
+      "weekly_amount": 50.0,
+      "weeks": 12,
+      "start_date": "2025-01-22T00:00:00Z",
+      "status": "active",
+      "total_amount": 600.0,
+      "created_at": "2025-01-15T10:32:00Z",
+      "validation_details": {
+        "is_valid": true,
+        "auto_approvable": true,
+        "covers_debt": true
+      }
+    }
+  ],
+  "total_plans": 1,
+  "active_plans": 1
+}
+```
+
+#### 9. Get Specific Payment Plan Details
+```bash
+curl -X GET "http://localhost:8000/orchestrate/payment-plans/pp_456ghi" \
+  -H "Content-Type: application/json" \
+  -H "X-Correlation-ID: test-$(uuidgen)"
+```
+
+**Response:**
+```json
+{
+  "payment_plan_id": "pp_456ghi",
+  "conversation_id": "conv_abc123",
+  "tenant_id": "tenant_12345",
+  "weekly_amount": 50.0,
+  "weeks": 12,
+  "start_date": "2025-01-22T00:00:00Z",
+  "end_date": "2025-04-16T00:00:00Z",
+  "status": "active",
+  "total_amount": 600.0,
+  "amount_paid": 150.0,
+  "amount_remaining": 450.0,
+  "payment_history": [
+    {
+      "payment_date": "2025-01-22T00:00:00Z",
+      "amount": 50.0,
+      "status": "paid",
+      "payment_method": "auto_draft"
+    },
+    {
+      "payment_date": "2025-01-29T00:00:00Z",
+      "amount": 50.0,
+      "status": "paid",
+      "payment_method": "auto_draft"
+    },
+    {
+      "payment_date": "2025-02-05T00:00:00Z",
+      "amount": 50.0,
+      "status": "paid",
+      "payment_method": "auto_draft"
+    }
+  ],
+  "created_at": "2025-01-15T10:32:00Z",
+  "updated_at": "2025-02-05T10:30:00Z",
+  "validation_details": {
+    "is_valid": true,
+    "issues": [],
+    "auto_approvable": true,
+    "total_amount": 600.0,
+    "covers_debt": true
+  }
+}
+```
+
+### 🚨 Escalation Management Endpoints
+
+#### 10. Manual Escalation Trigger
+```bash
+curl -X POST "http://localhost:8000/escalations/trigger" \
+  -H "Content-Type: application/json" \
+  -H "X-Correlation-ID: test-$(uuidgen)" \
+  -d '{
+    "conversation_id": "conv_abc123",
+    "workflow_id": "workflow-12345678-1234-1234-1234-123456789012",
+    "escalation_type": "manual",
+    "reason": "Customer requested supervisor regarding account dispute",
+    "severity": "high",
+    "auto_detected": false,
+    "metadata": {
+      "triggered_by": "customer_service_manager",
+      "department": "collections",
+      "urgent": true
+    }
+  }'
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "escalation_id": "esc_789jkl",
+  "conversation_id": "conv_abc123",
+  "workflow_id": "workflow-12345678-1234-1234-1234-123456789012",
+  "status": "escalation_created",
+  "escalation_type": "manual",
+  "severity": "high",
+  "escalated_at": "2025-01-15T11:00:00Z",
+  "assigned_to": "supervisor_team",
+  "priority": "high",
+  "expected_resolution_time": "2025-01-15T12:00:00Z"
+}
+```
 
 ## Configuration
 
@@ -217,7 +656,7 @@ docker run -d \
 
 ### Monitoring
 
-- **Health checks**: `/health` endpoint
+- **Health checks**: `/health/dependencies` endpoint
 - **Metrics**: `/orchestrate/metrics` endpoint
 - **Logs**: Structured JSON logging with correlation IDs
 - **Prometheus**: Available on port 9090 with Docker Compose
