@@ -1,0 +1,210 @@
+# =============================================================================
+# ORCHESTRATION SERVICE - RAILWAY ENVIRONMENT VARIABLES
+# =============================================================================
+# This file documents all environment variables required for the Orchestration Service
+# when deployed on Railway. Copy this file to .env.railway and fill in your values.
+#
+# Railway automatically provides some variables (like PORT), but you must configure
+# the service-specific variables below.
+# =============================================================================
+
+# =============================================================================
+# SERVICE CONFIGURATION
+# =============================================================================
+
+# Service identification (optional - defaults provided)
+SERVICE_NAME=orchestrator
+SERVICE_VERSION=1.0.0
+
+# Railway automatically provides PORT - do not override
+# PORT=8000
+
+# Host binding (Railway handles this automatically)
+# HOST=::
+
+# Debug mode (set to false in production)
+DEBUG=false
+
+# Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+LOG_LEVEL=INFO
+
+# =============================================================================
+# EXTERNAL SERVICE INTEGRATION URLs
+# =============================================================================
+# These are Railway internal service URLs - replace with your actual service names
+# Format: https://your-service-name.railway.app
+
+# SMS Agent Service - Handles SMS sending/receiving
+# Required: Yes
+SMS_AGENT_URL=https://sms-agent-production.railway.app
+
+# Collections Monitor Service - Provides tenant data and context
+# Required: Yes  
+COLLECTIONS_MONITOR_URL=https://collections-monitor-production.railway.app
+
+# Notification Service - Sends manager notifications
+# Required: Yes
+NOTIFICATION_SERVICE_URL=https://notification-service-production.railway.app
+
+# =============================================================================
+# OPENAI CONFIGURATION
+# =============================================================================
+
+# OpenAI API Key - Required for AI response generation
+# Get from: https://platform.openai.com/api-keys
+# Required: Yes
+OPENAI_API_KEY=sk-your-openai-api-key-here
+
+# OpenAI Model to use for response generation
+# Options: gpt-4-turbo-preview, gpt-4, gpt-3.5-turbo
+OPENAI_MODEL=gpt-4-turbo-preview
+
+# Response creativity (0.0 = deterministic, 2.0 = very creative)
+# Range: 0.0 - 2.0
+OPENAI_TEMPERATURE=0.7
+
+# Maximum tokens per response
+# Range: 50 - 4000
+OPENAI_MAX_TOKENS=200
+
+# =============================================================================
+# SUPABASE CONFIGURATION
+# =============================================================================
+
+# Supabase Project URL
+# Get from: https://supabase.com/dashboard/project/[project-id]/settings/api
+# Required: Yes
+SUPABASE_URL=https://your-project-id.supabase.co
+
+# Supabase Service Role Key (not anon key!)
+# Get from: https://supabase.com/dashboard/project/[project-id]/settings/api
+# Required: Yes
+SUPABASE_KEY=your-supabase-service-role-key-here
+
+# Optional: Direct database connection URL (if different from Supabase URL)
+# SUPABASE_DB_URL=postgresql://postgres:[password]@db.[project-id].supabase.co:5432/postgres
+
+# =============================================================================
+# BUSINESS RULES CONFIGURATION
+# =============================================================================
+
+# Maximum payment plan duration in weeks
+MAX_PAYMENT_WEEKS=12
+
+# Minimum weekly payment amount (in dollars)
+MIN_WEEKLY_PAYMENT=25.0
+
+# Confidence threshold for auto-approval (0.0 - 1.0)
+# Responses above this threshold are sent automatically
+AUTO_APPROVAL_CONFIDENCE=0.85
+
+# Minimum confidence for manual approval (0.0 - 1.0)
+# Responses below this threshold are escalated
+MANUAL_APPROVAL_MIN_CONFIDENCE=0.60
+
+# Hours before pending approvals escalate
+ESCALATION_HOURS=36
+
+# =============================================================================
+# CIRCUIT BREAKER & RESILIENCE
+# =============================================================================
+
+# Number of failures before circuit breaker opens
+CIRCUIT_BREAKER_FAILURE_THRESHOLD=5
+
+# Seconds before circuit breaker resets
+CIRCUIT_BREAKER_TIMEOUT_SECONDS=60
+
+# Maximum retry attempts for failed operations
+RETRY_MAX_ATTEMPTS=3
+
+# Base delay between retries (seconds)
+RETRY_BASE_DELAY_SECONDS=1
+
+# =============================================================================
+# SECURITY CONFIGURATION
+# =============================================================================
+
+# Secret key for JWT tokens and encryption
+# Generate with: openssl rand -hex 32
+# Required: Yes
+SECRET_KEY=your-secret-key-here-32-chars-minimum
+
+# JWT algorithm
+ALGORITHM=HS256
+
+# JWT token expiration time (minutes)
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+
+# =============================================================================
+# MONITORING & METRICS
+# =============================================================================
+
+# Enable metrics collection
+METRICS_ENABLED=true
+
+# Metrics server port (Railway may override this)
+METRICS_PORT=9090
+
+# Health check interval (seconds)
+HEALTH_CHECK_INTERVAL_SECONDS=30
+
+# =============================================================================
+# MANAGER NOTIFICATIONS
+# =============================================================================
+
+# Manager email for notifications
+MANAGER_EMAIL=manager@yourcompany.com
+
+# Enable approval notifications
+APPROVAL_NOTIFICATION_ENABLED=true
+
+# Enable escalation notifications
+ESCALATION_NOTIFICATION_ENABLED=true
+
+# =============================================================================
+# DEVELOPMENT SETTINGS
+# =============================================================================
+
+# Development mode (set to false in production)
+DEVELOPMENT_MODE=false
+
+# Mock external services for testing
+MOCK_EXTERNAL_SERVICES=false
+
+# Enable CORS for frontend integration
+ENABLE_CORS=true
+
+# CORS allowed origins (comma-separated)
+# Add your frontend URLs here
+CORS_ORIGINS=https://your-dashboard.railway.app,https://your-frontend.railway.app
+
+# =============================================================================
+# RAILWAY-SPECIFIC NOTES
+# =============================================================================
+#
+# 1. Railway automatically provides:
+#    - PORT (do not set this manually)
+#    - RAILWAY_ENVIRONMENT (production, preview, development)
+#    - RAILWAY_PROJECT_ID
+#    - RAILWAY_SERVICE_ID
+#
+# 2. Service URLs should use Railway's internal networking:
+#    - Format: https://[service-name].railway.app
+#    - These URLs are automatically available within your Railway project
+#
+# 3. Database connections:
+#    - Use SUPABASE_URL and SUPABASE_KEY for Supabase integration
+#    - Railway can also provide PostgreSQL if you prefer direct DB access
+#
+# 4. Environment-specific values:
+#    - Use different values for production vs preview environments
+#    - Consider using Railway's environment variables feature
+#
+# 5. Security:
+#    - Never commit real API keys to version control
+#    - Use Railway's secrets management for sensitive values
+#    - Rotate keys regularly
+#
+# =============================================================================
+

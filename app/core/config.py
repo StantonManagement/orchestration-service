@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     service_name: str = Field(default="orchestrator", env="SERVICE_NAME")
     service_version: str = Field(default="1.0.0", env="SERVICE_VERSION")
     port: int = Field(default=8000, env="PORT")
-    host: str = Field(default="0.0.0.0", env="HOST")
+    host: str = Field(default="::", env="HOST")
     debug: bool = Field(default=False, env="DEBUG")
     log_level: str = Field(default="INFO", env="LOG_LEVEL")
 
